@@ -1,0 +1,174 @@
+name: Quality Gate
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+    branches: [main, develop]
+  push:
+    branches: [main, develop]
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Quality Gate — memblokir PR yang tidak melengkapi checklist wajib.
+#
+# Terdiri dari 2 job:
+#   1. contract-tests — menjalankan automated test suite (Vitest)
+#      untuk memvalidasi kontrak data API ↔ Frontend.
+#   2. pr-checklist   — membaca PR body, validasi checklist terisi.
+#
+# Jika ada job yang fail, PR di-block dari merge.
+#
+# File PR template: .github/PULL_REQUEST_TEMPLATE.md
+# Dokumentasi      : assessment/02-quality-system.md
+# ──────────────────────────────────────────────────────────────────────────────
+
+jobs:
+  # ── Job 1: Contract Tests ─────────────────────────────────────────────────
+  contract-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: "npm"
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install dependencies
+        working-directory: ./web
+        run: npm ci
+
+      - name: Run contract tests
+        working-directory: ./web
+        run: npm test
+
+  # ── Job 2: PR Checklist Validation ────────────────────────────────────────
+  pr-checklist:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # Hanya jalan untuk pull request
+    if: github.event_name == 'pull_request'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate PR quality gate
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const body = context.payload.pull_request?.body || "";
+            const errors = [];
+
+            function pass(msg) { console.log(`  ✓ ${msg}`); }
+            function fail(msg) { console.log(`  ✗ ${msg}`); }
+
+            // ── GATE 1: Spec/PRD ─────────────────────────────────────────
+            console.log("\n=== GATE 1: Spec / PRD ===");
+            const hasPRDSection = /Spec\s*\/\s*PRD|PRD/i.test(body);
+            const hasPRDLink = /https?:\/\/[^\s)]+/.test(body)
+                            || /issue\s*#\d+/i.test(body);
+
+            if (!hasPRDSection && !hasPRDLink) {
+              const msg = "GATE-1: Tidak ada referensi Spec/PRD. " +
+                          "Cantumkan link ke PRD, dokumen spesifikasi, atau nomor issue.";
+              errors.push(msg);
+              fail(msg);
+            } else if (hasPRDSection || hasPRDLink) {
+              pass("Spec/PRD terisi.");
+            }
+
+            // ── GATE 2: Acceptance Criteria ──────────────────────────────
+            console.log("\n=== GATE 2: Acceptance Criteria ===");
+            const hasGivenWhenThen = /Given\b/i.test(body) &&
+                                     /When\b/i.test(body) &&
+                                     /Then\b/i.test(body);
+
+            if (!hasGivenWhenThen) {
+              const msg = "GATE-2: Acceptance criteria tidak ditemukan. " +
+                          "Tulis minimal 1 skenario dengan format Given/When/Then.";
+              errors.push(msg);
+              fail(msg);
+            } else {
+              pass("Acceptance criteria (Given/When/Then) terdeteksi.");
+            }
+
+            // ── GATE 3: Solution / Design Plan ───────────────────────────
+            console.log("\n=== GATE 3: Solution / Design Plan ===");
+            const hasSolutionSection = /Solution\s*\/\s*Design|Design\s*Plan/i.test(body);
+            const solutionChecklistChecked = /- \[x\]\s+saya\s+menyertakan/i.test(body);
+
+            if (!hasSolutionSection && !solutionChecklistChecked) {
+              const msg = "GATE-3: Solution/Design Plan tidak ditemukan. " +
+                          "Jelaskan pendekatan teknis dan checklist centang konfirmasi.";
+              errors.push(msg);
+              fail(msg);
+            } else {
+              pass("Solution/Design Plan terisi.");
+            }
+
+            // ── GATE 4: Tests Checklist ──────────────────────────────────
+            console.log("\n=== GATE 4: Tests ===");
+            const testChecked       = /- \[x\]\s+ya,/i.test(body);
+            const testNotNeeded     = /- \[x\]\s+tidak\s+perlu\s+test/i.test(body);
+
+            if (!testChecked && !testNotNeeded) {
+              const msg = "GATE-4: Checklist test belum dipilih. " +
+                          "Centang 'Ya, saya menambahkan test' atau " +
+                          "'Tidak perlu test karena: <alasan>'.";
+              errors.push(msg);
+              fail(msg);
+            } else {
+              pass("Checklist test tercentang.");
+            }
+
+            // ── GATE 5 (otomatis): File Test di PR ───────────────────────
+            console.log("\n=== GATE 5: File Test Berubah ===");
+
+            if (testNotNeeded) {
+              pass("Dilewati (explicit skip di checklist).");
+            } else {
+              const { data: files } = await github.rest.pulls.listFiles({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: context.payload.pull_number,
+              });
+
+              const testPattern = /(_spec\.rb|\.(spec|test)\.(ts|tsx|js|jsx)$|__tests__\/)/i;
+              const changedTestFiles = files.filter(f => testPattern.test(f.filename));
+
+              if (changedTestFiles.length === 0) {
+                const msg = "GATE-5: Tidak ada file test yang berubah di PR ini. " +
+                            "Pastikan PR menyertakan test yang relevan. " +
+                            "Jika tidak perlu, centang 'Tidak perlu test' di bagian 4.";
+                const nonTestFiles = files.map(f => f.filename).filter(f => !testPattern.test(f));
+                console.log(`  File berubah (${nonTestFiles.length} non-test):`);
+                nonTestFiles.slice(0, 10).forEach(f => console.log(`    - ${f}`));
+                if (nonTestFiles.length > 10) {
+                  console.log(`    ... dan ${nonTestFiles.length - 10} lainnya`);
+                }
+                errors.push(msg);
+                fail(msg);
+              } else {
+                pass(`File test terdeteksi (${changedTestFiles.length}):`);
+                changedTestFiles.forEach(f => console.log(`    - ${f.filename}`));
+              }
+            }
+
+            // ── Output Final ─────────────────────────────────────────────
+            console.log("\n========================================");
+            if (errors.length > 0) {
+              console.log(`\n❌ GAGAL — ${errors.length} gate tidak lolos:\n`);
+              errors.forEach((e, i) => console.log(`  ${i + 1}. ${e}`));
+              core.setFailed(errors.join("\n"));
+            } else {
+              console.log("\n✅ SEMUA GATE LOLOS — PR siap di-review.\n");
+            }
