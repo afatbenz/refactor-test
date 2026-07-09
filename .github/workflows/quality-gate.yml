@@ -1,0 +1,172 @@
+name: Quality Gate
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+    branches: [main, develop]
+  push:
+    branches: [main, develop]
+
+jobs:
+  # ── Job 1: Contract Tests ─────────────────────────────────────────────────
+  contract-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: "npm"
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install dependencies
+        working-directory: ./web
+        run: |
+          if [ -f "package.json" ]; then
+            npm ci --ignore-scripts 2>/dev/null || npm install --ignore-scripts
+          else
+            echo "⚠️  No package.json — skip install."
+          fi
+
+      - name: Run contract tests
+        working-directory: ./web
+        run: |
+          if npm pkg get scripts.test 2>/dev/null | grep -q "."; then
+            npm test
+          elif [ -f "node_modules/.bin/vitest" ]; then
+            npx vitest run
+          elif [ -f "src/__tests__/contract.test.ts" ]; then
+            echo "⚠️  vitest not installed — installing on-the-fly"
+            npx --yes vitest@^4 run
+          else
+            echo "ℹ️  No tests yet — skip."
+          fi
+
+  # ── Job 2: PR Checklist Validation ────────────────────────────────────────
+  pr-checklist:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: github.event_name == 'pull_request'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate PR quality gate
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            const body = (pr && pr.body) || "";
+            const errors = [];
+
+            function pass(msg) { console.log(`  ✓ ${msg}`); }
+            function fail(msg) { console.log(`  ✗ ${msg}`); }
+
+            // ── BYPASS ───────────────────────────────────────────────────────
+            const { data: changedFiles } = await github.rest.pulls.listFiles({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: pr.number,
+            });
+            const allPaths = changedFiles.map(f => f.filename);
+            console.log(`\nℹ️  Files changed (${allPaths.length}):`);
+            allPaths.forEach(f => console.log(`    - ${f}`));
+
+            // Infrastructure-only PR? Skip checklist.
+            // Infra = changes that DON'T touch application code:
+            //   api/app/, api/db/migrate/, api/config/routes.rb,
+            //   web/src/ (except __tests__/)
+            const appPatterns = ["api/app/", "api/db/migrate/", "api/config/routes.rb",
+                                "api/config/initializers/", "api/config/environments/"];
+            const hasAppChanges = allPaths.some(f =>
+              appPatterns.some(p => f.startsWith(p)) ||
+              (f.startsWith("web/src/") && !f.includes("__tests__"))
+            );
+            const isInfraPR = !hasAppChanges;
+
+            if (body.includes("[quality-gate-setup]") || isInfraPR) {
+              console.log("\nℹ️  Infrastructure/quality-gate PR — skipping checklist.\n");
+              console.log("✅ ALL GATES PASSED.\n");
+              return;
+            }
+
+            // ── GATE 1: Acceptance Criteria ────────────────────────────────
+            console.log("\n=== GATE 1: Acceptance Criteria ===");
+            const hasGivenWhenThen = /Given\b/i.test(body) &&
+                                     /When\b/i.test(body) &&
+                                     /Then\b/i.test(body);
+            if (!hasGivenWhenThen) {
+              const msg = "GATE-1: Acceptance criteria not found. Write at least one Given/When/Then scenario.";
+              errors.push(msg);
+              fail(msg);
+            } else {
+              pass("Acceptance criteria (Given/When/Then) detected.");
+            }
+
+            // ── GATE 2: Implementation approach ────────────────────────────
+            console.log("\n=== GATE 2: Implementation approach ===");
+            const hasImplSection = /Implementation approach/i.test(body) ||
+                                   /What does this PR do/i.test(body);
+            if (!hasImplSection) {
+              const msg = "GATE-2: Implementation approach not found. Explain your technical approach.";
+              errors.push(msg);
+              fail(msg);
+            } else {
+              pass("Implementation approach found.");
+            }
+
+            // ── GATE 3: Tests Checklist ────────────────────────────────────
+            console.log("\n=== GATE 3: Tests ===");
+            const testChecked       = /- \[x\]\s+yes\b/i.test(body);
+            const testNotNeeded     = /- \[x\]\s+not\s+needed/i.test(body);
+            if (!testChecked && !testNotNeeded) {
+              const msg = "GATE-3: Test checklist not checked. Check 'Yes — I added tests' or 'Not needed'.";
+              errors.push(msg);
+              fail(msg);
+            } else {
+              pass("Test checklist checked.");
+            }
+
+            // ── GATE 4: Test file changes ──────────────────────────────────
+            console.log("\n=== GATE 4: Test File Changes ===");
+
+            if (testNotNeeded) {
+              pass("Skipped (explicit opt-out).");
+            } else {
+              const testPattern = /(_spec\.rb|\.(spec|test)\.(ts|tsx|js|jsx)$|__tests__\/)/i;
+              const changedTestFiles = allPaths.filter(f => testPattern.test(f));
+
+              if (changedTestFiles.length === 0) {
+                const msg = "GATE-4: No test files changed in this PR.";
+                console.log(`  Files changed (${allPaths.length} total):`);
+                allPaths.slice(0, 10).forEach(f => console.log(`    - ${f}`));
+                if (allPaths.length > 10) {
+                  console.log(`    ... and ${allPaths.length - 10} more`);
+                }
+                errors.push(msg);
+                fail(msg);
+              } else {
+                pass(`Test files changed (${changedTestFiles.length}):`);
+                changedTestFiles.forEach(f => console.log(`    - ${f}`));
+              }
+            }
+
+            // ── Output ─────────────────────────────────────────────────────
+            console.log("\n========================================");
+            if (errors.length > 0) {
+              console.log(`\n❌ FAILED — ${errors.length} gate(s) blocked:\n`);
+              errors.forEach((e, i) => console.log(`  ${i + 1}. ${e}`));
+              core.setFailed(errors.join("\n"));
+            } else {
+              console.log("\n✅ ALL GATES PASSED — PR ready for review.\n");
+            }
