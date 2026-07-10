@@ -66,6 +66,7 @@ module Api
           :name,
           :time_limit_min,
           :language,
+          :system_prompt,
           assessment_skills_attributes: %i[
             id skill_id skill_label is_custom
             scope_include scope_exclude

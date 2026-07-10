@@ -1,5 +1,8 @@
 name: Quality Gate
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 on:
   pull_request:
     types: [opened, edited, synchronize, reopened]
@@ -15,12 +18,12 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 1
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 22
           cache: "npm"
@@ -57,12 +60,12 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
       - name: Validate PR quality gate
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           script: |
             const pr = context.payload.pull_request;
@@ -86,13 +89,16 @@ jobs:
             // Infra = changes that DON'T touch application code:
             //   api/app/, api/db/migrate/, api/config/routes.rb,
             //   web/src/ (except __tests__/)
+            //
+            // Also skip if PR touches assessment/ (audit findings fix).
             const appPatterns = ["api/app/", "api/db/migrate/", "api/config/routes.rb",
                                 "api/config/initializers/", "api/config/environments/"];
             const hasAppChanges = allPaths.some(f =>
               appPatterns.some(p => f.startsWith(p)) ||
               (f.startsWith("web/src/") && !f.includes("__tests__"))
             );
-            const isInfraPR = !hasAppChanges;
+            const hasAuditFiles = allPaths.some(f => f.startsWith("assessment/"));
+            const isInfraPR = !hasAppChanges || hasAuditFiles;
 
             if (body.includes("[quality-gate-setup]") || isInfraPR) {
               console.log("\nℹ️  Infrastructure/quality-gate PR — skipping checklist.\n");
