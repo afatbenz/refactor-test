@@ -34,24 +34,24 @@ function readWebFile(relativePath: string): string {
   }
 }
 
-// P0-2: SkillComparison.required_level vs API expected_level 
+// P0-2: SkillComparison field mismatch — FIXED
 
 describe("P0-2: SkillComparison field mismatch", () => {
   const frontendTypes = readWebFile("src/types/index.ts");
   const fitGapEngine = readApiFile("app/services/fit_gap/engine.rb");
 
-  it("FRONTEND punya required_level — BUG: harusnya expected_level", () => {
+  it("FRONTEND sudah pakai expected_level (bukan required_level)", () => {
     const hasRequiredLevel = /required_level/.test(frontendTypes);
-    expect(hasRequiredLevel).toBe(true);   
+    expect(hasRequiredLevel).toBe(false);  // required_level sudah dihapus
   });
 
-  it("FRONTEND belum punya expected_level di SkillComparison", () => {
+  it("FRONTEND punya expected_level di SkillComparison", () => {
     const skillComparisonMatch = frontendTypes.match(/interface SkillComparison[\s\S]*?^\}/m);
     expect(skillComparisonMatch).not.toBeNull();
 
     const skillComparisonBody = skillComparisonMatch![0];
     const hasExpectedLevel = /expected_level/.test(skillComparisonBody);
-    expect(hasExpectedLevel).toBe(false); 
+    expect(hasExpectedLevel).toBe(true);
   });
 
   it("BACKENG sudah benar — kirim expected_level", () => {
@@ -64,25 +64,25 @@ describe("P0-2: SkillComparison field mismatch", () => {
 
 // P0-3: Speaker type "assessor" tidak dikenal backend 
 
-describe("P0-3: Speaker type mismatch ('assessor' tidak dikenal backend)", () => {
+describe("P0-3: Speaker type — FIXED", () => {
   const frontendTypes = readWebFile("src/types/index.ts");
   const webSocketHook = readWebFile("src/hooks/useAudioWebSocket.ts");
   const dbSchema = readApiFile("db/schema.rb");
 
-  it("FRONTENG masih define speaker 'assessor' — harusnya hanya 'ai'/'candidate'", () => {
+  it("FRONTEND hanya define speaker 'candidate' dan 'ai' — tidak ada 'assessor'", () => {
     const transcriptTurnMatch = frontendTypes.match(/interface TranscriptTurn[\s\S]*?^\}/m);
     expect(transcriptTurnMatch).not.toBeNull();
 
     const hasAssessor = /"assessor"/.test(transcriptTurnMatch![0]);
-    expect(hasAssessor).toBe(true);
+    expect(hasAssessor).toBe(false);
   });
 
-  it("WEBSOCKET HOOK masih mapping fallback ke 'assessor' — harusnya 'ai'", () => {
+  it("WEBSOCKET HOOK mapping fallback ke 'ai' bukan 'assessor'", () => {
     const line = webSocketHook.match(/onTranscript\(\{[^}]*speaker[^}]*\}/);
     expect(line).not.toBeNull();
 
     const hasAssessorFallback = /"assessor"/.test(line![0]);
-    expect(hasAssessorFallback).toBe(true);
+    expect(hasAssessorFallback).toBe(false);
   });
 
   it("DB ENUM speaker_type benar — hanya 'ai' dan 'candidate'", () => {
@@ -108,13 +108,13 @@ describe("P1-1: skill_id — number di frontend vs string di database", () => {
     expect(skillIdLine![1]).toBe("string");
   });
 
-  it("FRONTEND masih define skill_id sebagai number — harusnya string", () => {
+  it("FRONTEND sudah define skill_id sebagai string — sesuai DB", () => {
     const assessmentSkillMatch = frontendTypes.match(/interface AssessmentSkill[\s\S]*?^\}/m);
     expect(assessmentSkillMatch).not.toBeNull();
 
     const body = assessmentSkillMatch![0];
-    const isNumber = /skill_id\??:\s*number/.test(body);
-    expect(isNumber).toBe(true);
+    const isString = /skill_id\??:\s*string/.test(body);
+    expect(isString).toBe(true);
   });
 
   it("SEED DATA skill_id berbentuk string — sesuai DB", () => {
@@ -136,13 +136,13 @@ describe("P1-2: PortfolioSkill.ai_level — string label vs integer", () => {
     expect(hasIntegerReturn).toBe(true);
   });
 
-  it("FRONTEND masih define ai_level sebagai string — harusnya number", () => {
+  it("FRONTEND sudah define ai_level sebagai number — sesuai API", () => {
     const portfolioSkillMatch = frontendTypes.match(/interface PortfolioSkill[\s\S]*?^\}/m);
     expect(portfolioSkillMatch).not.toBeNull();
 
     const body = portfolioSkillMatch![0];
-    const isString = /ai_level:\s*string/.test(body);
-    expect(isString).toBe(true);            
+    const isNumber = /ai_level:\s*number/.test(body);
+    expect(isNumber).toBe(true);
   });
 
   it("FRONTENG punya parseLevel() — workaround yang konfirmasi mismatch", () => {
@@ -184,12 +184,12 @@ describe("P1-4: system_prompt tidak bisa diupdate via API", () => {
     expect(/system_prompt/.test(dbSchema)).toBe(true);
   });
 
-  it("PERMITTED PARAMS belum include system_prompt — BUG", () => {
+  it("PERMITTED PARAMS sudah include system_prompt — FIXED", () => {
     const paramsBlock = assessmentsController.match(/def assessment_params[\s\S]*?^  end/m);
     expect(paramsBlock).not.toBeNull();
 
     const hasSystemPrompt = /:system_prompt/.test(paramsBlock[0]);
-    expect(hasSystemPrompt).toBe(false);   
+    expect(hasSystemPrompt).toBe(true);
   });
 });
 
