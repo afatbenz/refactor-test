@@ -14,6 +14,40 @@ class AudioWebSocketMiddleware
   PROACTIVE_RECONNECT_JITTER = 30  # randomise to avoid thundering herd
 
   SYSTEM_SIGNAL_TOKEN = 'SYS-TC-7x9k'
+  END_TOKEN_TTL = 120 # seconds — token valid for 2 minutes after preparing_to_end
+
+  # Generate a one-time end token, store in Redis, return the token string.
+  def self.store_end_token(session_id, redis_url: nil)
+    redis_url ||= ENV.fetch('REDIS_URL', 'redis://localhost:6379/1')
+    token = SecureRandom.hex(16)
+    redis = ::Redis.new(url: redis_url)
+    redis.setex("end_token:#{session_id}", END_TOKEN_TTL, token)
+    redis.close
+    token
+  rescue => e
+    Rails.logger.warn("[EndToken] Failed to store end token: #{e.message}")
+    nil
+  end
+
+  # Verify a one-time end token. Returns true if valid (and consumes it).
+  def self.verify_end_token(session_id, token, redis_url: nil)
+    return false if token.blank?
+
+    redis_url ||= ENV.fetch('REDIS_URL', 'redis://localhost:6379/1')
+    redis = ::Redis.new(url: redis_url)
+    stored = redis.get("end_token:#{session_id}")
+    if stored && ActiveSupport::SecurityUtils.secure_compare(stored, token.to_s)
+      redis.del("end_token:#{session_id}")
+      redis.close
+      true
+    else
+      redis.close
+      false
+    end
+  rescue => e
+    Rails.logger.warn("[EndToken] Failed to verify end token: #{e.message}")
+    false
+  end
 
   WRAP_UP_SIGNAL = "[TIME CONTROL:#{SYSTEM_SIGNAL_TOKEN}] { \"wrap_up\": true, \"all_skills_covered\": true }" \
                    ' — Close the interview NOW. Do NOT ask any more questions.' \
@@ -258,7 +292,8 @@ class AudioWebSocketMiddleware
             next if state.ending_scheduled
             Rails.logger.warn("[AudioWS] on_model_turn_complete delayed — finalizing via closing-phrase fallback (session=#{session.id})")
             state.ending_scheduled = true
-            send_json(browser_ws, type: 'preparing_to_end', reason: 'all_covered')
+            end_token = AudioWebSocketMiddleware.store_end_token(session.id)
+            send_json(browser_ws, type: 'preparing_to_end', reason: 'all_covered', end_token: end_token)
             poll_for_session_end(browser_ws, state, session, attempts: 0)
           end
         end

@@ -30,11 +30,6 @@ module AiInterview
       #{config.root}/app/workers
     ]
 
-    # Use UUID primary keys by default
-    config.generators do |g|
-      g.orm :active_record, primary_key_type: :uuid
-    end
-
     # ── Middleware stack ────────────────────────────────────────────────────────
     #
     # Order matters:
